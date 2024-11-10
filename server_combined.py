@@ -6,6 +6,8 @@ import pygame
 import numpy as np
 from datetime import datetime
 
+log_to_file = False
+
 # Initialize pygame mixer
 pygame.mixer.init()
 
@@ -78,14 +80,15 @@ def callback_esp32_sensor1(client, userdata, msg):
     
     new_data = msg.payload.decode('utf-8')
     
-    file_path = "logs.txt"
-    # Get the current timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Open the file in append mode
-    with open(file_path, 'a') as file:
-        # Write the timestamp and data
-        file.write(f"{timestamp} - {new_data}\n")
+    if log_to_file:
+        file_path = "logs.txt"
+        # Get the current timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Open the file in append mode
+        with open(file_path, 'a') as file:
+            # Write the timestamp and data
+            file.write(f"{timestamp} - {new_data}\n")
 
     new_data_list = new_data.split(",")
     new_data_x = float(new_data_list[0])
