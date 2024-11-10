@@ -1,3 +1,4 @@
 paho-mqtt
 pygame
 numpy
+vqf

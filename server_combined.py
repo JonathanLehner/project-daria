@@ -5,8 +5,13 @@ import random
 import pygame
 import numpy as np
 from datetime import datetime
+from vqf import VQF
 
 log_to_file = False
+
+# Initialize the VQF filter
+vqf = VQF(0.01)
+
 
 # Initialize pygame mixer
 pygame.mixer.init()
@@ -47,31 +52,92 @@ def on_disconnect(client, userdata, rc):
 buffer = []
 decision = []
 
-def processData(new_value):
+# Initialize variables for tracking gravity and state
+gravity_z = 0.0  # Estimate of gravity component
+alpha = 0.9  # Smoothing factor for EMA, closer to 1 for a slower response to change
+velocity_z = 0.0
+hand_position = None  # Can be "up" or "down"
+up_velocity_threshold = 0.5  # Threshold indicating "up" position
+down_velocity_threshold = -0.5  # Threshold indicating "down" position
+stabilization_threshold = 0.1  # Small threshold for detecting velocity stabilization
 
-    decision = -1
-    threshold = 10
+def processRawData(accel_data, gyro_data, dt=0.01):
+    """
+    Process accelerometer and gyroscope data using VQF to determine the "up" acceleration.
 
-    buffer.append(new_value)
+    Parameters:
+    - accel_data: Tuple (ax, ay, az) in m/s^2 representing accelerometer data.
+    - gyro_data: Tuple (gx, gy, gz) in rad/s representing gyroscope data.
+    - dt: Time interval between readings (in seconds).
 
-    if len(buffer) < 11: 
-        decision = 3  # Buffer is not full
+    Returns:
+    - up_acceleration: The "up" component of acceleration after gravity is removed.
+    """
+    # Update VQF with new data
+    vqf.update(gyro_data, accel_data)
 
-    else:
-        buffer.pop(0)
-        N = len(buffer)
-        mean_kernel = np.ones(N)/N
-        buffer_filt = np.convolve(buffer, mean_kernel, mode='same')
-        last_value = buffer_filt[-1] - 14
-        
-        if last_value > threshold:  # arm goes towards mouth
-            decision = 2  # stop music
-        elif last_value < -threshold:  # arm goes away from mouth
-            decision = 1  # start music
-        else:
-            decision = 8000  # error happened
-                
-    return decision
+    # Get orientation as a quaternion
+    q = vqf.getQuat3D()
+
+    # Convert quaternion to rotation matrix
+    R = quaternion_to_rotation_matrix(q)
+
+    # Rotate accelerometer data to align with Earth frame
+    accel_earth_frame = R @ np.array(accel_data)
+
+    # The "up" acceleration is the Z-component in the Earth frame minus gravity (9.81 m/s^2)
+    up_acceleration = accel_earth_frame[2] - 9.81
+
+    return up_acceleration
+
+def quaternion_to_rotation_matrix(q):
+    """
+    Convert a quaternion to a rotation matrix.
+
+    Parameters:
+    - q: Quaternion [w, x, y, z]
+
+    Returns:
+    - 3x3 rotation matrix
+    """
+    w, x, y, z = q
+    return np.array([
+        [1 - 2*y**2 - 2*z**2, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
+        [2*x*y + 2*z*w, 1 - 2*x**2 - 2*z**2, 2*y*z - 2*x*w],
+        [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x**2 - 2*y**2]
+    ])
+
+def processData(new_value, dt=0.1):
+    global gravity_z, velocity_z, hand_position
+
+    # Update gravity estimate using EMA
+    gravity_z = alpha * gravity_z + (1 - alpha) * new_value
+
+    # Calculate dynamic acceleration by removing gravity component
+    dynamic_z_accel = new_value - gravity_z
+
+    # Integrate the dynamic acceleration to estimate velocity
+    velocity_z += dynamic_z_accel * dt
+    print("velocity is", velocity_z)
+
+    # Check if velocity stabilizes within thresholds for "up" or "down"
+    if abs(velocity_z) < stabilization_threshold:
+        # If velocity is close to zero, assume hand is stable in previous position
+        return 2 if hand_position == "up" else 1 if hand_position == "down" else 0
+
+    elif velocity_z >= up_velocity_threshold and hand_position != "up":
+        # Hand moves to "up" position
+        hand_position = "up"
+        return 2
+
+    elif velocity_z <= down_velocity_threshold and hand_position != "down":
+        # Hand moves to "down" position
+        hand_position = "down"
+        return 1
+
+    return 0  # No significant change
+
+
 
 # a callback functions 
 def callback_esp32_sensor1(client, userdata, msg):
@@ -94,8 +160,12 @@ def callback_esp32_sensor1(client, userdata, msg):
     new_data_x = float(new_data_list[0])
     new_data_y = float(new_data_list[1])
     new_data_z = float(new_data_list[2])
-
-    action = processData(new_data_z)
+    gyro_x = float(new_data_list[3])
+    gyro_y = float(new_data_list[4])
+    gyro_z = float(new_data_list[5])
+    
+    accel_up = processRawData(np.array([new_data_x, new_data_y, new_data_z]), np.array([gyro_x, gyro_y, gyro_z]), 0.01)
+    action = processData(accel_up, 0.01)
     # action = random.randint(0, 2)  # Randomly pick 0, 1, or 2
     if action == 0:
         print("Action: Do nothing")
